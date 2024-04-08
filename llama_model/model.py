@@ -1,15 +1,14 @@
 import torch
 import transformers
-import csv
 import os 
-import emoji
 from transformers import LlamaForCausalLM, LlamaTokenizer, AutoTokenizer, GenerationConfig
-from peft import AutoPeftModelForCausalLM, PeftModel
+from peft import PeftModel
 from sklearn.model_selection import train_test_split
 from peft import (
     LoraConfig,
     get_peft_model
 )
+import time
 
 
 class LlamaModel:
@@ -153,6 +152,7 @@ class LlamaModel:
             "love":"😍",
             "surprise":"😂😃"
         }
+        st = time.time()
         for i in range(data_len):
             emotion = self.generate_emotion(data[i]["content"], model).lower()
             if emotion != "emotion: ":
@@ -167,10 +167,11 @@ class LlamaModel:
                         arr_accuracy_emotions[data[i]["sentiment"]] = 1
                     #print(i, "True", data[i]["sentiment"], emotion)
                 #else:
-                    #print(i, "False", data[i]["sentiment"], emotion)    
+                    #print(i, "False", data[i]["sentiment"], emotion)
         elapsed_time = time.time() - st
         print(accuracy/check_number)
         print("Not empty answers: ", f"{len(acc_good_string)}/{data_len}")
+        print('Время исполнения:', time.strftime("%H:%M:%S", time.gmtime(elapsed_time)))
 
     def tokenizer_for_train(self):
         tokenizer = self.tokenizer
