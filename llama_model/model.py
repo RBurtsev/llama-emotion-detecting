@@ -168,6 +168,7 @@ class LlamaModel:
                     #print(i, "True", data[i]["sentiment"], emotion)
                 #else:
                     #print(i, "False", data[i]["sentiment"], emotion)    
+        elapsed_time = time.time() - st
         print(accuracy/check_number)
         print("Not empty answers: ", f"{len(acc_good_string)}/{data_len}")
 
