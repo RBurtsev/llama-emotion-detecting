@@ -92,7 +92,7 @@ class LlamaModel:
                 text = ". ".join(sentences)
                 prompt = f"{self.INSTRUCTION}\n:\n{sample['content']}\nEmotion: "
                 full_prompt = f"{self.INSTRUCTION}\nText:\n{sample['content']}\nEmotion: {sample['sentiment']}"
-                if len(tokenizer(full_prompt)["input_ids"]) < CUTOFF_LEN:
+                if len(tokenizer(full_prompt)["input_ids"]) < self.CUTOFF_LEN:
                     break
         return prompt, full_prompt
 
