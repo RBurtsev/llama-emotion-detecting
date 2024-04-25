@@ -20,18 +20,21 @@ class LlamaModel:
     ):
         self.DEVICE = DEVICE
         self.BASE_MODEL = BASE_MODEL
+        self.R = 128
         try:
-            self.ADAPTER_MODELS_ALL = os.listdir(f"emotion_detecting/batch_{batch_size}/")
+            self.ADAPTER_MODELS_ALL = os.listdir(f"emotion_detecting/batch_{batch_size}_r_{self.R}/")
             ADAPTER_MODELS = []
             for model in self.ADAPTER_MODELS_ALL:
                 if "checkpoint" in model:
-                    ADAPTER_MODELS.append(f"emotion_detecting/batch_{batch_size}/"+model)
+                    ADAPTER_MODELS.append(f"emotion_detecting/batch_{batch_size}_r_{self.R}/"+model)
             self.ADAPTER_MODEL = ADAPTER_MODELS[-1]
         except:
             print("Check your output_dir")
         self.tokenizer = LlamaTokenizer.from_pretrained(BASE_MODEL, legacy="False")
-        self.INSTRUCTION = "Detect emotion from text."
-        self.CUTOFF_LEN = 500
+        self.INSTRUCTION = "Which of the emotions: sadness, joy, fear, anger, love, surprise, is more suitable for this text?"
+        self.CUTOFF_LEN = 5000
+        torch.cuda.empty_cache()
+        
 
     def get_model_for_infer(self):
         model = LlamaForCausalLM.from_pretrained(
@@ -67,21 +70,21 @@ class LlamaModel:
             )
 
     def generate_emotion(self, text, model):
-        prompt = f"{self.INSTRUCTION}\nText:\n{text}\nEmotion: "
+        prompt = f"{self.INSTRUCTION}\nText:\n{text}\nemotion: "
         response = self.generate_response(prompt, model)
         decoded_output = self.tokenizer.decode(response.sequences[0], skip_special_tokens=True)
         decoded_output_lines = decoded_output.split("\n")
         #print(decoded_output_lines)
         for line in decoded_output_lines:
-            if "Emotion:" in line:
+            if "emotion:" in line:
                 emotion = line
                 break
         return emotion
     
     def generate_prompt(self, sample):
         tokenizer = self.tokenizer_for_train()
-        prompt = f"{self.INSTRUCTION}\nText:\n{sample['content']}\nEmotion: "
-        full_prompt = f"{self.INSTRUCTION}\nText:\n{sample['content']}\nEmotion: {sample['sentiment']}"
+        prompt = f"{self.INSTRUCTION}\nText:\n{sample['content']}\nemotion: "
+        full_prompt = f"{self.INSTRUCTION}\nText:\n{sample['content']}\nemotion: {sample['emotion']}"
 
         # If the length of full_prompt is greater than CUTOFF_LEN, remove the last few sentences of the text,
         # until the length is less than CUTOFF_LEN
@@ -90,8 +93,8 @@ class LlamaModel:
             while True:
                 sentences = sentences[:-1]
                 text = ". ".join(sentences)
-                prompt = f"{self.INSTRUCTION}\n:\n{sample['content']}\nEmotion: "
-                full_prompt = f"{self.INSTRUCTION}\nText:\n{sample['content']}\nEmotion: {sample['sentiment']}"
+                prompt = f"{self.INSTRUCTION}\n:\n{sample['content']}\nemotion: "
+                full_prompt = f"{self.INSTRUCTION}\nText:\n{sample['content']}\nemotion: {sample['emotion']}"
                 if len(tokenizer(full_prompt)["input_ids"]) < self.CUTOFF_LEN:
                     break
         return prompt, full_prompt
@@ -124,7 +127,7 @@ class LlamaModel:
         tokenized_full_prompt = self.tokenize(prompt, full_prompt)
         return tokenized_full_prompt
 
-    def accuracy_check(self, data_path = "./data/test.txt", data_len = 500):
+    def measures_check(self, data_path = "./data/test.txt", data_len = 500):
         model = self.get_model_for_infer()
         with open(data_path, 'r') as data_file:
             reader = data_file.readlines()
@@ -132,7 +135,7 @@ class LlamaModel:
             i = 0
             for line in reader:
                 data.append({})
-                data[i]["sentiment"] = line.split(";")[1].split("\n")[0]
+                data[i]["emotion"] = line.split(";")[1].split("\n")[0]
                 data[i]["content"] = line.split(";")[0]
                 i += 1
         
@@ -140,10 +143,8 @@ class LlamaModel:
             data_len = len(data)
             
         print("Data len ", data_len)
-        accuracy = 0
-        arr_accuracy_emotions = {}
-        acc_good_string = []
-        check_number = 0 
+        acc_good_strings = 0
+        wrong_answers = 0
         emoji_dict = {
             "sadness":"😢😔💔",
             "joy":"😃😊😂😋",
@@ -152,26 +153,66 @@ class LlamaModel:
             "love":"😍",
             "surprise":"😂😃"
         }
+        emotion_arr = ["joy", "love", "surprise", "sadness", "fear", "anger"]
         st = time.time()
+        check_process = data_len*0.1
+        emotion_metrics = {}
+        for emotion in emotion_arr:
+            emotion_metrics[emotion] = {}
+            emotion_metrics[emotion]["TP"] = 0
+            emotion_metrics[emotion]["TN"] = 0
+            emotion_metrics[emotion]["FP"] = 0
+            emotion_metrics[emotion]["FN"] = 0
         for i in range(data_len):
+            if i == check_process:
+                print(f"Now number:{i} {(i//(data_len*0.1))*10}%")
+                check_process += data_len*0.1
             emotion = self.generate_emotion(data[i]["content"], model).lower()
             if emotion != "emotion: ":
-                acc_good_string.append(data[i])
+                acc_good_strings += 1
                 emotion = emotion.split()[-1]
-                check_number += 1
-                if emotion == data[i]["sentiment"] or emotion in emoji_dict[data[i]["sentiment"]]:
-                    accuracy += 1
-                    try:
-                        arr_accuracy_emotions[data[i]["sentiment"]] += 1
-                    except:
-                        arr_accuracy_emotions[data[i]["sentiment"]] = 1
-                    #print(i, "True", data[i]["sentiment"], emotion)
-                #else:
-                    #print(i, "False", data[i]["sentiment"], emotion)
+                for key, value in emoji_dict.items():
+                    if emotion in value:
+                        emotion = key 
+                if emotion in emotion_arr:
+                    if emotion == data[i]["emotion"]:
+                        emotion_metrics[emotion]["TP"] += 1
+                        for emo in emotion_arr:
+                            if emo != emotion:
+                                emotion_metrics[emo]["TN"] += 1
+                        #print(i, "True", data[i]["emotion"], emotion)
+                    else:
+                        emotion_metrics[emotion]["FP"] += 1
+                        emotion_metrics[data[i]["emotion"]]["FN"] += 1
+                else:
+                    wrong_answers += 1
+                    #print(i, "Wrong", data[i]["emotion"], emotion)
         elapsed_time = time.time() - st
-        print(accuracy/check_number)
-        print("Not empty answers: ", f"{len(acc_good_string)}/{data_len}")
-        print('Время исполнения:', time.strftime("%H:%M:%S", time.gmtime(elapsed_time)))
+        for_print = {
+            "Not empty answers: ": f"{acc_good_strings}/{data_len}",
+            "Wrong answers: ": f"{wrong_answers}/{data_len}",
+            "Execution time:": time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
+        }
+        accuracy_top = 0
+        accuracy_down = 0
+        for emotion in emotion_arr:
+            TP = emotion_metrics[emotion]["TP"]
+            TN = emotion_metrics[emotion]["TN"]
+            FP = emotion_metrics[emotion]["FP"]
+            FN = emotion_metrics[emotion]["FN"]
+            accuracy_top += TP+TN
+            accuracy_down += TP+TN+FP+FN
+            precision = TP/(TP+FP)
+            recall = TP/(TP+FN)
+            F1 = 2*(precision * recall) / (precision + recall)
+            for_print[f"{emotion}_Precision"] = precision
+            for_print[f"{emotion}_Recall"] = recall
+            for_print[f"{emotion}_F1"] = F1
+
+        for_print["Accuracy"] = accuracy_top / accuracy_down
+
+        for key, value in for_print.items():
+            print(key, value)
 
     def tokenizer_for_train(self):
         tokenizer = self.tokenizer
@@ -182,23 +223,31 @@ class LlamaModel:
         tokenizer.load_in_8bit_fp32_cpu_offload=True
         return tokenizer
 
-    def train(self, data_path = "./data/train.txt", batch_size = 8, output_dir = "emotion_detecting"):
+    def train(self, train_data_path = "./data/train.txt", val_data_path = "./data/val.txt", batch_size = 8, output_dir = "emotion_detecting"):
         tokenizer = self.tokenizer_for_train()
         model = LlamaForCausalLM.from_pretrained(
             self.BASE_MODEL,
             torch_dtype=torch.float16,
-            device_map="auto",
+            device_map=self.DEVICE,
         )
-        with open(data_path, 'r') as data_file:
+        with open(train_data_path, 'r') as data_file:
             reader = data_file.readlines()
-            dataset = []
+            train_data = []
             i = 0
             for line in reader:
-                dataset.append({})
-                dataset[i]["sentiment"] = line.split(";")[1].split("\n")[0]
-                dataset[i]["content"] = line.split(";")[0]
+                train_data.append({})
+                train_data[i]["emotion"] = line.split(";")[1].split("\n")[0]
+                train_data[i]["content"] = line.split(";")[0]
                 i += 1
-        train_data, test_data = train_test_split(dataset, test_size=0.1)
+        with open(val_data_path, 'r') as data_file:
+            reader = data_file.readlines()
+            test_data = []
+            i = 0
+            for line in reader:
+                test_data.append({})
+                test_data[i]["emotion"] = line.split(";")[1].split("\n")[0]
+                test_data[i]["content"] = line.split(";")[0]
+                i += 1 
         # Data preprocessing (receiving a prompt for each example from the dataset and subsequent tokenization)
         train_data = list(map(self.generate_and_tokenize_prompt, train_data))
         test_data = list(map(self.generate_and_tokenize_prompt, test_data))
@@ -214,7 +263,7 @@ class LlamaModel:
         # Dimension of adapter matrices
         # For example, if the original weight matrix is ​​4096 x 4096, then the matrices we add are
         # have dimensions 4096 x LORA_R and LORA_R x 4096.
-        LORA_R = 8
+        LORA_R = self.R
 
         # After multiplying by the matrix of adapter weights, divide the vector components by LORA_R and multiply by LORA_ALPHA
         LORA_ALPHA = 16
@@ -241,7 +290,7 @@ class LlamaModel:
 
         # Display information about the model's trained weights.
         model.print_trainable_parameters()
-        OUTPUT_DIR = f"{output_dir}/batch_{batch_size}"
+        OUTPUT_DIR = f"{output_dir}/batch_{batch_size}_r_{LORA_R}"
         BATCH_SIZE = batch_size
         TRAIN_EPOCHS = 3
         MICRO_BATCH_SIZE = 1
@@ -252,17 +301,17 @@ class LlamaModel:
         training_arguments = transformers.TrainingArguments(
             per_device_train_batch_size=MICRO_BATCH_SIZE,
             gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
-            warmup_steps=200,
-            #max_steps=8000,
+            warmup_steps=500,
+            #max_steps=1000,
             num_train_epochs=TRAIN_EPOCHS,
             learning_rate=LEARNING_RATE,
             fp16=True,
-            logging_steps=200,
+            logging_steps=500,
             optim="adamw_torch",
             evaluation_strategy="steps",
             save_strategy="steps",
-            eval_steps=200,
-            save_steps=200,
+            eval_steps=500,
+            save_steps=500,
             output_dir=OUTPUT_DIR,
             save_total_limit=3,
             load_best_model_at_end=True,

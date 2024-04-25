@@ -7,4 +7,4 @@ parser.add_argument("--model_path", type=str, default="./Llama-2-7b-chat-hf", he
 parser.add_argument("--data_len", type=int, default=100, help="number of data accuracy")
 args = parser.parse_args()
 model = LlamaModel(BASE_MODEL=args.model_path, batch_size=args.batch)
-model.accuracy_check(data_len=100)
+model.measures_check(data_len=args.data_len)
