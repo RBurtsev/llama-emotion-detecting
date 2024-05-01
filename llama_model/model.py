@@ -16,7 +16,10 @@ class LlamaModel:
         self,
         BASE_MODEL = "./Llama-2-7b-chat-hf",
         DEVICE = "cuda" if torch.cuda.is_available() else "cpu",
-        batch_size = 16
+        batch_size = 16,
+        test_data_path = "./data/test.txt",
+        train_data_path = "./data/train.txt",
+        val_data_path = "./data/val.txt"
     ):
         self.DEVICE = DEVICE
         self.BASE_MODEL = BASE_MODEL
@@ -33,8 +36,22 @@ class LlamaModel:
         self.tokenizer = LlamaTokenizer.from_pretrained(BASE_MODEL, legacy="False")
         self.INSTRUCTION = "Which of the emotions: sadness, joy, fear, anger, love, surprise, is more suitable for this text?"
         self.CUTOFF_LEN = 5000
+        self.test_data = self.get_data(test_data_path)
+        self.train_data = self.get_data(train_data_path)
+        self.val_data = self.get_data(val_data_path)
         torch.cuda.empty_cache()
         
+    def get_data(self, data_path):
+        with open(data_path, 'r') as data_file:
+            reader = data_file.readlines()
+            data = []
+            i = 0
+            for line in reader:
+                data.append({})
+                data[i]["emotion"] = line.split(";")[1].split("\n")[0]
+                data[i]["content"] = line.split(";")[0]
+                i += 1
+        return data
 
     def get_model_for_infer(self):
         model = LlamaForCausalLM.from_pretrained(
@@ -127,18 +144,9 @@ class LlamaModel:
         tokenized_full_prompt = self.tokenize(prompt, full_prompt)
         return tokenized_full_prompt
 
-    def measures_check(self, data_path = "./data/test.txt", data_len = 500):
+    def measures_check(self, data_len = 500):
         model = self.get_model_for_infer()
-        with open(data_path, 'r') as data_file:
-            reader = data_file.readlines()
-            data = []
-            i = 0
-            for line in reader:
-                data.append({})
-                data[i]["emotion"] = line.split(";")[1].split("\n")[0]
-                data[i]["content"] = line.split(";")[0]
-                i += 1
-        
+        data = self.test_data
         if data_len > len(data):
             data_len = len(data)
             
@@ -223,34 +231,16 @@ class LlamaModel:
         tokenizer.load_in_8bit_fp32_cpu_offload=True
         return tokenizer
 
-    def train(self, train_data_path = "./data/train.txt", val_data_path = "./data/val.txt", batch_size = 8, output_dir = "emotion_detecting"):
+    def train(self, batch_size = 8, output_dir = "emotion_detecting"):
         tokenizer = self.tokenizer_for_train()
         model = LlamaForCausalLM.from_pretrained(
             self.BASE_MODEL,
             torch_dtype=torch.float16,
             device_map=self.DEVICE,
         )
-        with open(train_data_path, 'r') as data_file:
-            reader = data_file.readlines()
-            train_data = []
-            i = 0
-            for line in reader:
-                train_data.append({})
-                train_data[i]["emotion"] = line.split(";")[1].split("\n")[0]
-                train_data[i]["content"] = line.split(";")[0]
-                i += 1
-        with open(val_data_path, 'r') as data_file:
-            reader = data_file.readlines()
-            test_data = []
-            i = 0
-            for line in reader:
-                test_data.append({})
-                test_data[i]["emotion"] = line.split(";")[1].split("\n")[0]
-                test_data[i]["content"] = line.split(";")[0]
-                i += 1 
         # Data preprocessing (receiving a prompt for each example from the dataset and subsequent tokenization)
-        train_data = list(map(self.generate_and_tokenize_prompt, train_data))
-        test_data = list(map(self.generate_and_tokenize_prompt, test_data))
+        train_data = list(map(self.generate_and_tokenize_prompt, self.train_data))
+        test_data = list(map(self.generate_and_tokenize_prompt, self.val_data))
 
         # data_collator is needed to form a batch (padding, assembling batch elements into one tensor,
         # convert numpy arrays or lists to tensors torch.LongTensor)
