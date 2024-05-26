@@ -2,3 +2,4 @@ emotion_detecting/
 data/
 Llama-2-7b-chat-hf/
 llama_model/__pycache__/
+__pycache__

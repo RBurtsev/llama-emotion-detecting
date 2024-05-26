@@ -9,38 +9,90 @@ from peft import (
     get_peft_model
 )
 import time
+import csv
+from data import optimize_text
 
 
 class LlamaModel:
     def __init__(
         self,
         BASE_MODEL = "./Llama-2-7b-chat-hf",
-        DEVICE = "cuda" if torch.cuda.is_available() else "cpu",
+        DEVICE = "cpu",
         batch_size = 16,
         test_data_path = "./data/test.txt",
-        train_data_path = "./data/train.txt",
+        train_data_path = "./data/emotions.csv",
         val_data_path = "./data/val.txt"
     ):
         self.DEVICE = DEVICE
         self.BASE_MODEL = BASE_MODEL
-        self.R = 128
+        self.R = 256
+        #max number of every emotions in val and test data (the excess will be sent to train_data)
+        self.MAX_NUM_EMOTION_DATA = 50
         try:
-            self.ADAPTER_MODELS_ALL = os.listdir(f"emotion_detecting/batch_{batch_size}_r_{self.R}/")
+            self.ADAPTER_MODELS_ALL = os.listdir(f"emotion_detecting/batch_{batch_size}_r_{self.R}_optimized_data_{self.MAX_NUM_EMOTION_DATA}/")
             ADAPTER_MODELS = []
             for model in self.ADAPTER_MODELS_ALL:
                 if "checkpoint" in model:
-                    ADAPTER_MODELS.append(f"emotion_detecting/batch_{batch_size}_r_{self.R}/"+model)
+                    ADAPTER_MODELS.append(f"emotion_detecting/batch_{batch_size}_r_{self.R}_optimized_data_{self.MAX_NUM_EMOTION_DATA}/"+model)
             self.ADAPTER_MODEL = ADAPTER_MODELS[-1]
         except:
             print("Check your output_dir")
         self.tokenizer = LlamaTokenizer.from_pretrained(BASE_MODEL, legacy="False")
         self.INSTRUCTION = "Which of the emotions: sadness, joy, fear, anger, love, surprise, is more suitable for this text?"
         self.CUTOFF_LEN = 5000
-        self.test_data = self.get_data(test_data_path)
-        self.train_data = self.get_data(train_data_path)
-        self.val_data = self.get_data(val_data_path)
+        self.test_data_path = test_data_path
+        self.train_data_path = train_data_path
+        self.val_data_path = val_data_path
+        self.train_data, self.test_data, self.val_data = self.optimize_data()
         torch.cuda.empty_cache()
-        
+
+    def optimize_data(self):
+        test_data = self.get_data(self.test_data_path)
+        train_data = self.get_csv_data(self.train_data_path)
+        val_data = self.get_data(self.val_data_path)
+        check_val_data = self.check_data(val_data)
+        check_test_data = self.check_data(test_data)
+        #test data
+        for key,value in check_test_data.items():
+            if value > self.MAX_NUM_EMOTION_DATA:
+                check = value
+                i = 0
+                while i < len(test_data):
+                    if check == self.MAX_NUM_EMOTION_DATA:
+                        break
+                    if test_data[i]["emotion"] == key:
+                        train_data.append(test_data[i])
+                        test_data.remove(test_data[i])
+                        check -= 1
+                    else:
+                        i += 1
+        #val data
+        for key,value in check_val_data.items():
+            if value > self.MAX_NUM_EMOTION_DATA:
+                check = value
+                i = 0
+                while i < len(val_data):
+                    if check == self.MAX_NUM_EMOTION_DATA:
+                        break
+                    if val_data[i]["emotion"] == key:
+                        train_data.append(val_data[i])
+                        val_data.remove(val_data[i])
+                        check -= 1
+                    else:
+                        i += 1
+        return train_data, test_data, val_data
+
+    def check_data(self, data = []):
+        if data == []:
+            data = self.test_data
+        result = {}
+        for dict in data:
+            try:
+                result[dict["emotion"]] += 1
+            except:
+                result[dict["emotion"]] = 0
+        return result
+    
     def get_data(self, data_path):
         with open(data_path, 'r') as data_file:
             reader = data_file.readlines()
@@ -51,6 +103,17 @@ class LlamaModel:
                 data[i]["emotion"] = line.split(";")[1].split("\n")[0]
                 data[i]["content"] = line.split(";")[0]
                 i += 1
+        return data
+    
+    def get_csv_data(self, csv_data_path):
+        with open(csv_data_path, mode='r') as infile:
+            reader = csv.reader(infile)
+            mylist = list(reader)
+        data = []
+        for i in range(len(mylist)):
+            data.append({})
+            data[i]["emotion"] = mylist[i][0]
+            data[i]["content"] = mylist[i][1]
         return data
 
     def get_model_for_infer(self):
@@ -87,6 +150,7 @@ class LlamaModel:
             )
 
     def generate_emotion(self, text, model):
+        text = optimize_text(text)
         prompt = f"{self.INSTRUCTION}\nText:\n{text}\nemotion: "
         response = self.generate_response(prompt, model)
         decoded_output = self.tokenizer.decode(response.sequences[0], skip_special_tokens=True)
@@ -144,7 +208,9 @@ class LlamaModel:
         tokenized_full_prompt = self.tokenize(prompt, full_prompt)
         return tokenized_full_prompt
 
-    def measures_check(self, data_len = 500):
+    def measures_check(self, data_len = 5000):
+        if data_len == 5000:
+            data_len = self.MAX_NUM_EMOTION_DATA
         model = self.get_model_for_infer()
         data = self.test_data
         if data_len > len(data):
@@ -208,6 +274,7 @@ class LlamaModel:
             TN = emotion_metrics[emotion]["TN"]
             FP = emotion_metrics[emotion]["FP"]
             FN = emotion_metrics[emotion]["FN"]
+            print(emotion, f"TP:{TP}, TN:{TN}, FP:{FP}, FN:{FN}")
             accuracy_top += TP+TN
             accuracy_down += TP+TN+FP+FN
             precision = TP/(TP+FP)
@@ -233,6 +300,7 @@ class LlamaModel:
 
     def train(self, batch_size = 8, output_dir = "emotion_detecting"):
         tokenizer = self.tokenizer_for_train()
+        print(len(self.train_data))
         model = LlamaForCausalLM.from_pretrained(
             self.BASE_MODEL,
             torch_dtype=torch.float16,
@@ -280,7 +348,7 @@ class LlamaModel:
 
         # Display information about the model's trained weights.
         model.print_trainable_parameters()
-        OUTPUT_DIR = f"{output_dir}/batch_{batch_size}_r_{LORA_R}"
+        OUTPUT_DIR = f"{output_dir}/batch_{batch_size}_r_{LORA_R}_optimized_data_{self.MAX_NUM_EMOTION_DATA}"
         BATCH_SIZE = batch_size
         TRAIN_EPOCHS = 3
         MICRO_BATCH_SIZE = 1
@@ -291,19 +359,19 @@ class LlamaModel:
         training_arguments = transformers.TrainingArguments(
             per_device_train_batch_size=MICRO_BATCH_SIZE,
             gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
-            warmup_steps=500,
+            warmup_steps=1211,
             #max_steps=1000,
             num_train_epochs=TRAIN_EPOCHS,
             learning_rate=LEARNING_RATE,
             fp16=True,
-            logging_steps=500,
+            logging_steps=1211,
             optim="adamw_torch",
             evaluation_strategy="steps",
             save_strategy="steps",
-            eval_steps=500,
-            save_steps=500,
+            eval_steps=1211,
+            save_steps=1211,
             output_dir=OUTPUT_DIR,
-            save_total_limit=3,
+            save_total_limit=2,
             load_best_model_at_end=True,
             report_to="none"
         )
