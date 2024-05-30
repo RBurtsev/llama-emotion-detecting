@@ -1,12 +1,13 @@
 import torch
 import transformers
 import os 
-from transformers import LlamaForCausalLM, LlamaTokenizer, AutoTokenizer, GenerationConfig
+from transformers import BitsAndBytesConfig, LlamaForCausalLM, LlamaTokenizer, AutoTokenizer, GenerationConfig
 from peft import PeftModel
 from sklearn.model_selection import train_test_split
 from peft import (
     LoraConfig,
-    get_peft_model
+    get_peft_model,
+    prepare_model_for_int8_training
 )
 import time
 import csv
@@ -17,7 +18,7 @@ class LlamaModel:
     def __init__(
         self,
         BASE_MODEL = "./Llama-2-7b-chat-hf",
-        DEVICE = "cpu",
+        DEVICE = "cuda",
         batch_size = 16,
         test_data_path = "./data/test.txt",
         train_data_path = "./data/emotions.csv",
@@ -117,11 +118,17 @@ class LlamaModel:
         return data
 
     def get_model_for_infer(self):
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+        )
         model = LlamaForCausalLM.from_pretrained(
             self.BASE_MODEL,
+            quantization_config=bnb_config,
             device_map=self.DEVICE
         )
-
+        model = prepare_model_for_int8_training(model)
         model = PeftModel.from_pretrained(model, self.ADAPTER_MODEL, torch_dtype=torch.float16)
         model.config.pad_token_id = self.tokenizer.pad_token_id = 0
         model.config.bos_token_id = 1
@@ -152,9 +159,12 @@ class LlamaModel:
     def generate_emotion(self, text, model):
         text = optimize_text(text)
         prompt = f"{self.INSTRUCTION}\nText:\n{text}\nemotion: "
+        st = time.time()
         response = self.generate_response(prompt, model)
         decoded_output = self.tokenizer.decode(response.sequences[0], skip_special_tokens=True)
         decoded_output_lines = decoded_output.split("\n")
+        elapsed_time = time.time() - st
+        print("Execution time:", elapsed_time)
         #print(decoded_output_lines)
         for line in decoded_output_lines:
             if "emotion:" in line:
@@ -298,12 +308,13 @@ class LlamaModel:
         tokenizer.load_in_8bit_fp32_cpu_offload=True
         return tokenizer
 
-    def train(self, batch_size = 8, output_dir = "emotion_detecting"):
+    def train(self, batch_size = 16, output_dir = "emotion_detecting"):
         tokenizer = self.tokenizer_for_train()
         print(len(self.train_data))
         model = LlamaForCausalLM.from_pretrained(
             self.BASE_MODEL,
-            torch_dtype=torch.float16,
+            quantization_config=bnb_config,
+            #torch_dtype=torch.float16,
             device_map=self.DEVICE,
         )
         # Data preprocessing (receiving a prompt for each example from the dataset and subsequent tokenization)
