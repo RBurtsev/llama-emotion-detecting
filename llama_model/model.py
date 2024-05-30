@@ -313,8 +313,7 @@ class LlamaModel:
         print(len(self.train_data))
         model = LlamaForCausalLM.from_pretrained(
             self.BASE_MODEL,
-            quantization_config=bnb_config,
-            #torch_dtype=torch.float16,
+            torch_dtype=torch.float16,
             device_map=self.DEVICE,
         )
         # Data preprocessing (receiving a prompt for each example from the dataset and subsequent tokenization)
