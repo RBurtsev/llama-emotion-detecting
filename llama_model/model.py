@@ -1,7 +1,7 @@
 import torch
 import transformers
 import os 
-from transformers import LlamaForCausalLM, LlamaTokenizer, AutoTokenizer, GenerationConfig
+from transformers import AutoConfig, AutoModelForCausalLM, LlamaForCausalLM, LlamaTokenizer, AutoTokenizer, GenerationConfig
 from peft import PeftModel
 from sklearn.model_selection import train_test_split
 from peft import (
@@ -11,40 +11,56 @@ from peft import (
 import time
 import csv
 from data import optimize_text
+from llama_cpp import Llama
 
 
 class LlamaModel:
     def __init__(
         self,
         BASE_MODEL = "./Llama-2-7b-chat-hf",
-        DEVICE = "cpu",
+        DEVICE = "cuda",
         batch_size = 16,
         test_data_path = "./data/test.txt",
         train_data_path = "./data/emotions.csv",
         val_data_path = "./data/val.txt"
     ):
+        self.batch_size = batch_size
         self.DEVICE = DEVICE
         self.BASE_MODEL = BASE_MODEL
         self.R = 256
         #max number of every emotions in val and test data (the excess will be sent to train_data)
-        self.MAX_NUM_EMOTION_DATA = 5000
+        self.MAX_NUM_EMOTION_DATA = 50000
         try:
             self.ADAPTER_MODELS_ALL = os.listdir(f"emotion_detecting/batch_{batch_size}_r_{self.R}_optimized_data_{self.MAX_NUM_EMOTION_DATA}/")
             ADAPTER_MODELS = []
             for model in self.ADAPTER_MODELS_ALL:
                 if "checkpoint" in model:
                     ADAPTER_MODELS.append(f"emotion_detecting/batch_{batch_size}_r_{self.R}_optimized_data_{self.MAX_NUM_EMOTION_DATA}/"+model)
-            self.ADAPTER_MODEL = ADAPTER_MODELS[-1]
+            print(ADAPTER_MODELS)
+            self.ADAPTER_MODEL = ADAPTER_MODELS[0]
         except:
             print("Check your output_dir")
-        self.tokenizer = LlamaTokenizer.from_pretrained(BASE_MODEL, legacy="False")
+        self.llama_cpp = True
+        if self.llama_cpp:
+            self.tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, gguf_file="llama-2-cpp.gguf", legacy="False")
+        else:
+            self.tokenizer = LlamaTokenizer.from_pretrained(BASE_MODEL, legacy="False")
         self.INSTRUCTION = "Which of the emotions: sadness, joy, fear, anger, love, surprise, is more suitable for this text?"
         self.CUTOFF_LEN = 5000
         self.test_data_path = test_data_path
         self.train_data_path = train_data_path
         self.val_data_path = val_data_path
         self.train_data, self.test_data, self.val_data = self.optimize_data()
-        torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()
+
+    def cpp_model(self):
+        LLM = Llama(model_path="llama-2-cpp.gguf")
+        text = "i still feel pretty gloomy"
+        prompt = f"{self.INSTRUCTION}\nText:\n{text}\nemotion: "
+        output = LLM(prompt)
+
+        # display the response
+        print(output["choices"][0]["text"])
 
     def optimize_data(self):
         test_data = self.get_data(self.test_data_path)
@@ -117,10 +133,19 @@ class LlamaModel:
         return data
 
     def get_model_for_infer(self):
-        model = LlamaForCausalLM.from_pretrained(
-            self.BASE_MODEL,
-            device_map=self.DEVICE
-        )
+        #print(torch.cuda.memory_summary(device=self.DEVICE, abbreviated=False))
+        if self.llama_cpp:
+            model = AutoModelForCausalLM.from_pretrained(
+                self.BASE_MODEL,
+                gguf_file="llama-2-cpp.gguf",
+                device_map=self.DEVICE
+            )
+        else:
+            model = LlamaForCausalLM.from_pretrained(
+                self.BASE_MODEL,
+                torch_dtype=torch.float16,
+                device_map=self.DEVICE,
+            )
 
         model = PeftModel.from_pretrained(model, self.ADAPTER_MODEL, torch_dtype=torch.float16)
         model.config.pad_token_id = self.tokenizer.pad_token_id = 0
@@ -152,9 +177,12 @@ class LlamaModel:
     def generate_emotion(self, text, model):
         text = optimize_text(text)
         prompt = f"{self.INSTRUCTION}\nText:\n{text}\nemotion: "
+        st = time.time()
         response = self.generate_response(prompt, model)
         decoded_output = self.tokenizer.decode(response.sequences[0], skip_special_tokens=True)
         decoded_output_lines = decoded_output.split("\n")
+        elapsed_time = time.time() - st
+        print("Execution time:", elapsed_time)
         #print(decoded_output_lines)
         for line in decoded_output_lines:
             if "emotion:" in line:
@@ -209,8 +237,6 @@ class LlamaModel:
         return tokenized_full_prompt
 
     def measures_check(self, data_len = 5000):
-        if data_len == 5000:
-            data_len = self.MAX_NUM_EMOTION_DATA
         model = self.get_model_for_infer()
         data = self.test_data
         if data_len > len(data):
@@ -301,11 +327,18 @@ class LlamaModel:
     def train(self, batch_size = 8, output_dir = "emotion_detecting"):
         tokenizer = self.tokenizer_for_train()
         print(len(self.train_data))
-        model = LlamaForCausalLM.from_pretrained(
-            self.BASE_MODEL,
-            torch_dtype=torch.float16,
-            device_map=self.DEVICE,
-        )
+        if self.llama_cpp:
+            model = AutoModelForCausalLM.from_pretrained(
+                self.BASE_MODEL,
+                gguf_file="llama-2-cpp.gguf",
+                device_map=self.DEVICE
+            )
+        else:
+            model = LlamaForCausalLM.from_pretrained(
+                self.BASE_MODEL,
+                torch_dtype=torch.float16,
+                device_map=self.DEVICE,
+            )
         # Data preprocessing (receiving a prompt for each example from the dataset and subsequent tokenization)
         train_data = list(map(self.generate_and_tokenize_prompt, self.train_data))
         test_data = list(map(self.generate_and_tokenize_prompt, self.val_data))
@@ -324,7 +357,7 @@ class LlamaModel:
         LORA_R = self.R
 
         # After multiplying by the matrix of adapter weights, divide the vector components by LORA_R and multiply by LORA_ALPHA
-        LORA_ALPHA = 32
+        LORA_ALPHA = 16
         LORA_DROPOUT = 0.05
 
         # To which layers of the transformer will we add adapters, in this case - to the matrices in the self-attention layers
@@ -343,8 +376,9 @@ class LlamaModel:
             bias="none",
             task_type="CAUSAL_LM",
         )
+
         model = get_peft_model(model, config)
-        
+
         # Display information about the model's trained weights.
         model.print_trainable_parameters()
         OUTPUT_DIR = f"{output_dir}/batch_{batch_size}_r_{LORA_R}_optimized_data_{self.MAX_NUM_EMOTION_DATA}"
@@ -353,7 +387,6 @@ class LlamaModel:
         MICRO_BATCH_SIZE = 1
         GRADIENT_ACCUMULATION_STEPS = BATCH_SIZE // MICRO_BATCH_SIZE
         LEARNING_RATE = 3e-4
-
 
         steps = 500
         training_arguments = transformers.TrainingArguments(
