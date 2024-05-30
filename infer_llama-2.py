@@ -7,5 +7,5 @@ parser.add_argument("--model_path", type=str, default="./Llama-2-7b-chat-hf", he
 args = parser.parse_args()
 print(args)
 model = LlamaModel(BASE_MODEL=args.model_path, batch_size=args.batch)
-text = "i still feel pretty gloomy"
+text = "i feel a little mellow today"
 print(f"Text: {text}\n",model.generate_emotion(text = text, model=model.get_model_for_infer()))

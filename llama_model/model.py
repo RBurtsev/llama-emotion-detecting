@@ -27,7 +27,7 @@ class LlamaModel:
         self.BASE_MODEL = BASE_MODEL
         self.R = 256
         #max number of every emotions in val and test data (the excess will be sent to train_data)
-        self.MAX_NUM_EMOTION_DATA = 50
+        self.MAX_NUM_EMOTION_DATA = 5000
         try:
             self.ADAPTER_MODELS_ALL = os.listdir(f"emotion_detecting/batch_{batch_size}_r_{self.R}_optimized_data_{self.MAX_NUM_EMOTION_DATA}/")
             ADAPTER_MODELS = []
@@ -119,7 +119,7 @@ class LlamaModel:
     def get_model_for_infer(self):
         model = LlamaForCausalLM.from_pretrained(
             self.BASE_MODEL,
-            device_map="auto"
+            device_map=self.DEVICE
         )
 
         model = PeftModel.from_pretrained(model, self.ADAPTER_MODEL, torch_dtype=torch.float16)
@@ -324,7 +324,7 @@ class LlamaModel:
         LORA_R = self.R
 
         # After multiplying by the matrix of adapter weights, divide the vector components by LORA_R and multiply by LORA_ALPHA
-        LORA_ALPHA = 16
+        LORA_ALPHA = 32
         LORA_DROPOUT = 0.05
 
         # To which layers of the transformer will we add adapters, in this case - to the matrices in the self-attention layers
@@ -343,9 +343,8 @@ class LlamaModel:
             bias="none",
             task_type="CAUSAL_LM",
         )
-
         model = get_peft_model(model, config)
-
+        
         # Display information about the model's trained weights.
         model.print_trainable_parameters()
         OUTPUT_DIR = f"{output_dir}/batch_{batch_size}_r_{LORA_R}_optimized_data_{self.MAX_NUM_EMOTION_DATA}"
@@ -356,22 +355,23 @@ class LlamaModel:
         LEARNING_RATE = 3e-4
 
 
+        steps = 500
         training_arguments = transformers.TrainingArguments(
             per_device_train_batch_size=MICRO_BATCH_SIZE,
             gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
-            warmup_steps=1211,
+            warmup_steps=steps,
             #max_steps=1000,
             num_train_epochs=TRAIN_EPOCHS,
             learning_rate=LEARNING_RATE,
             fp16=True,
-            logging_steps=1211,
+            logging_steps=steps,
             optim="adamw_torch",
             evaluation_strategy="steps",
             save_strategy="steps",
-            eval_steps=1211,
-            save_steps=1211,
+            eval_steps=steps,
+            save_steps=steps,
             output_dir=OUTPUT_DIR,
-            save_total_limit=2,
+            save_total_limit=1,
             load_best_model_at_end=True,
             report_to="none"
         )
